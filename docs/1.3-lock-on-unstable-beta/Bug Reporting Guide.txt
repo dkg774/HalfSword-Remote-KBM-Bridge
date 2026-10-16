@@ -1,0 +1,41 @@
+Bug Reporting Guide
+Half Sword Remote KBM Bridge — 1.3 Lock On Unstable Beta
+
+Send bug reports and log files to:
+alexanderschmidt13@yahoo.com
+
+Suggested subject:
+Half Sword KBM 1.3 Lock On Unstable Beta — [short issue description]
+
+How to capture a useful report
+1. Start the bridge on the host computer.
+2. Open Record and select Both players. This is useful even if the problem appears to affect only one player.
+3. Enter a short Issue / reason describing what you intend to reproduce, then click Start recording.
+4. Return to Half Sword and reproduce the issue. A short recording containing the problem is usually more useful than a long unrelated session.
+5. Optional: enable the in-game issue marker before testing. Its default is Numpad 0. Press it when the problem occurs; press it again when the problem clears, and explain what each press meant in your email. Keep Num Lock on to distinguish Numpad 0 from Insert. You can rebind the marker on Record. It is off by default and only works during an enabled recording while the game is focused.
+6. Click Stop recording when finished. If you press the bridge's Stop button instead, it attempts to finish and save the recording before stopping.
+7. Copy the logs before starting the bridge again, because the main bridge log is overwritten on a new bridge session.
+
+Files to attach
+- HalfSwordBridge13Beta.log
+- The matching HalfSwordRecording-Both-*.log, or the P1/P2 recording if you selected one player.
+
+Logs save in the same folder as the EXE and DLL. If there are several recordings, attach the ones containing the issue. You may put the logs into a ZIP to reduce attachment size. If the game crashes or freezes, send whatever logs were saved even if the recording has no normal ending. If no logs were created, describe the failure and include the exact error message.
+
+Include these details in your email
+- Version: 1.3 Lock On Unstable Beta.
+- Whether you were the host (Player 1) or joiner (Player 2), and which player was affected.
+- Game version and mode: single player, split screen, Carnage, or another mode.
+- Host and joiner operating systems, if known, and whether Steam Remote Play Together was used.
+- Other installed mods.
+- Steps that caused the issue, what you expected, and what happened instead.
+- Whether it happens every time or only occasionally.
+- Whether the whole game froze/stuttered, only turning felt jittery, or input was delayed/stuck.
+- Selected lock-on interval and whether custom lock-on was enabled for the affected player.
+- Whether the issue happened before recording began, and any known connection problems.
+- Approximate time in the recording and the meaning of any issue marker presses.
+- Any steps that restored normal behavior, such as Reset stuck Player 2 inputs, toggling lock-on, or restarting the game.
+
+The recorder captures input events, game input states, lock-on information, and bridge timing. It does not capture video or audio. Input events and the issue text may contain information you prefer not to share; review the logs before emailing them. The logs do not provide the joiner's network ping, so connection details in your report help.
+
+Thank you for testing and helping improve the beta.
