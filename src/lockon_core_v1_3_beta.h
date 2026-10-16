@@ -9,6 +9,15 @@ constexpr std::uintptr_t kFallen=0x13B1, kDowned=0x1C20;
 constexpr std::uintptr_t kCurrentControlRotation=0x2088;
 constexpr std::uintptr_t kController=0x2C8, kControllerRotation=0x308;
 constexpr std::uintptr_t kBodyRotation=0x1310;
+// Blueprint axis events found by resolve_player() in the bridge:
+// 8 is "Turn Right / Left Mouse" and 9 is "Look Up / Down Mouse". Feeding a
+// small look-axis value through the pawn's own input event is the only way
+// this build can move the camera vertically while locked on.
+constexpr int kLookUpDownAxisFunction=9;
+constexpr double kPitchDeadzoneDegrees=1.2;
+constexpr double kPitchMaxDegreesPerSecond=75.0;
+constexpr double kPitchAxisUnitsPerDegree=4.0;
+constexpr double kPitchAxisMaximum=60.0;
 struct Vector { double x,y,z; };
 struct Rotator { double pitch,yaw,roll; };
 struct Target { void *actor{}; unsigned id{}; };
@@ -19,6 +28,7 @@ LONGLONG last_turn_clock[2]{};
 ULONGLONG cycle_boost_until[2]{};
 unsigned turn_count[2]{};
 unsigned turn_applied_count[2]{};
+unsigned pitch_applied_count[2]{};
 double max_turn_gap_ms[2]{};
 unsigned pitch_warning_count{};
 void *set_control_rotation_function{}, *failed_controller_type{};
@@ -119,11 +129,54 @@ bool resolve_control_rotation(void *controller){
     std::fflush(g_log);
     return false;
 }
+// Feed a small value into the pawn's own "Look Up / Down Mouse" axis event so
+// the game rotates the camera vertically by itself. This is the same path the
+// joiner's mouse uses, so it respects the game's own pitch limits and camera
+// code instead of fighting them. The look axis convention matches the bridge:
+// moving the remote mouse down (positive delta) produces a positive axis value
+// and looks down (more negative pitch), so aiming below the horizon needs a
+// positive axis step. Returns false when the blueprint function is missing.
+bool apply_pitch_axis(void *pawn_actor,const Vector &offset,double seconds,int slot){
+    const double horizontal=std::sqrt(offset.x*offset.x+offset.y*offset.y);
+    if(!(horizontal>1.0))return true; // directly above or below: nothing to aim at
+    const double wanted_pitch=-std::atan2(offset.z,horizontal)*180.0/3.141592653589793;
+    // The pawn's current view pitch is only meaningful for the locally
+    // controlled joiner fighter (slot 1). Player 1's camera is steered by the
+    // native game lock-on, so its own pitch must not be overwritten here.
+    if(slot!=1)return true;
+    auto view=reinterpret_cast<Rotator*>(reinterpret_cast<std::uintptr_t>(pawn_actor)+kCurrentControlRotation);
+    if(!readable(view,sizeof(Rotator)))return true;
+    const double current_pitch=view->pitch;
+    if(!std::isfinite(current_pitch)||!std::isfinite(wanted_pitch))return false;
+    const double error=wanted_pitch-current_pitch;
+    if(std::fabs(error)<kPitchDeadzoneDegrees)return true;
+    double step=error;
+    const double max_step=kPitchMaxDegreesPerSecond*seconds;
+    if(step>max_step)step=max_step;
+    if(step<-max_step)step=-max_step;
+    // Axis sign follows the game's mouse-look convention: looking down (more
+    // negative pitch) means a positive axis value.
+    double axis=-step*kPitchAxisUnitsPerDegree;
+    if(axis>kPitchAxisMaximum)axis=kPitchAxisMaximum;
+    if(axis<-kPitchAxisMaximum)axis=-kPitchAxisMaximum;
+    if(axis==0.0)return true;
+    void *look_function=g_functions[kLookUpDownAxisFunction];
+    if(!look_function||!readable(look_function,sizeof(Object)))return false;
+    auto table=*reinterpret_cast<void***>(pawn_actor);
+    if(!readable(table,(kProcessEventSlot+1)*sizeof(void*)))return false;
+    auto process=reinterpret_cast<ProcessEvent>(table[kProcessEventSlot]);
+    if(!executable(reinterpret_cast<void*>(process)))return false;
+    const float axis_value=static_cast<float>(axis);
+    __try{ process(pawn_actor,look_function,&axis_value); }
+    __except(EXCEPTION_EXECUTE_HANDLER){ return false; }
+    if(slot>=0&&slot<2)++pitch_applied_count[slot];
+    return true;
+}
 void apply(int i){
     void *p=pawn[i],*t=target[i]; Vector v{}, own{};
-    // The native lock flag controls pitch, so never enable it here.
+    // The native lock flag stays untouched; both axes are steered here.
     if(!enabled[i]||!arm[i]||!p||!t||!alive(t)||!location(t,v)||!location(p,own))return;
-    const double dx=v.x-own.x,dy=v.y-own.y;
+    const double dx=v.x-own.x,dy=v.y-own.y,dz=v.z-own.z;
     const double distance_squared=dx*dx+dy*dy;
     if(distance_squared<100.0)return;
     // Cap the amount turned after a late callback, while measuring ordinary
@@ -142,6 +195,11 @@ void apply(int i){
     const double seconds=std::fmin(gap_ms,close?16.0:32.0)/1000.0;
     last_turn[i]=now;
     ++turn_count[i];if(gap_ms>max_turn_gap_ms[i])max_turn_gap_ms[i]=gap_ms;
+    // Vertical camera correction (the previous build only ever turned yaw, so
+    // a locked target above or below eye level was never centred). This runs
+    // before the yaw early-return below because pitch is an independent axis.
+    if(!apply_pitch_axis(p,{dx,dy,dz},seconds,i)&&pitch_warning_count++<20){
+        std::fprintf(g_log,"LOCK P%d pitch axis dispatch unavailable\n",i+1);std::fflush(g_log); }
     auto controller_ptr=reinterpret_cast<void**>(reinterpret_cast<std::uintptr_t>(p)+kController);
     if(!readable(controller_ptr,sizeof(void*))||!*controller_ptr)return;
     void *controller=*controller_ptr;
@@ -176,11 +234,13 @@ void apply(int i){
         last_turn_log[i]=now;
         auto body=reinterpret_cast<Rotator*>(reinterpret_cast<std::uintptr_t>(p)+kBodyRotation);
         auto view=reinterpret_cast<Rotator*>(reinterpret_cast<std::uintptr_t>(p)+kCurrentControlRotation);
-        std::fprintf(g_log,"LOCK P%d yaw-only controller=%.2f wanted=%.2f step=%.2f cycle_boost=%d body=%.2f view=(%.2f,%.2f) checks=%u turns=%u max_gap_ms=%.2f distance=%.1f cadence_ms=%u\n",
+        const double wanted_pitch=-std::atan2(dz,std::sqrt(distance_squared))*180.0/3.141592653589793;
+        std::fprintf(g_log,"LOCK P%d yaw controller=%.2f wanted=%.2f step=%.2f cycle_boost=%d body=%.2f view=(%.2f,%.2f) wanted_pitch=%.2f checks=%u turns=%u pitch_steps=%u max_gap_ms=%.2f distance=%.1f cadence_ms=%u\n",
             i+1,current.yaw,wanted,delta,cycling?1:0,readable(body,sizeof(Rotator))?body->yaw:9999.0,
             readable(view,sizeof(Rotator))?view->pitch:9999.0,readable(view,sizeof(Rotator))?view->yaw:9999.0,
-            turn_count[i],turn_applied_count[i],max_turn_gap_ms[i],std::sqrt(distance_squared),interval);
-        turn_count[i]=turn_applied_count[i]=0;max_turn_gap_ms[i]=0;
+            wanted_pitch,turn_count[i],turn_applied_count[i],pitch_applied_count[i],
+            max_turn_gap_ms[i],std::sqrt(distance_squared),interval);
+        turn_count[i]=turn_applied_count[i]=pitch_applied_count[i]=0;max_turn_gap_ms[i]=0;
         std::fflush(g_log);
     }
 }
